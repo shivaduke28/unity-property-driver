@@ -121,3 +121,7 @@ crashlytics-build.properties
 /Assets/Settings/
 /Assets/Settings.meta
 test-results.xml
+# .NET build output for the source generator project
+/src/**/bin/
+/src/**/obj/
+!/src/**/*.csproj
