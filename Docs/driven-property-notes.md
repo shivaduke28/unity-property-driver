@@ -106,7 +106,20 @@ driven 登録の効果は **「保存される値」を固定すること** で�
 
 Register 直後に表示を更新したければ、値を変えるか、バインディングの再評価を別途起こす必要がある（方法は未調査）。
 
-Transform の Inspector（`TransformInspector`）は IMGUI（`OnInspectorGUI`）なので上記とは別経路。driven な `m_LocalPosition` がどう表示されるかは未検証。
+### IMGUI インスペクタには driven の表示が無い
+
+`UnityEditor.CoreModule.dll` と `UnityEngine.CoreModule.dll` を Mono.Cecil で走査し、`DrivenPropertyManager` / `DrivenPropertyManagerInternal` を呼ぶ全メソッドを列挙した結果:
+
+| 呼び出し元 | 呼ぶ API | 用途 |
+| --- | --- | --- |
+| `UIElements.BindingsStyleHelpers.UpdateElementStyleFromProperty` | `IsDriven` | UI Toolkit フィールドの `unity-binding--driven` スタイル |
+| `PrefabUtility.IsPropertyBeingDrivenByPrefabStage` | `IsDriving` / `IsDrivingPartial` | Prefab Stage が駆動中かの判定 |
+| `SceneManagement.PrefabStage.RecordPatchedPropertiesForContent` / `RefreshPatchedProperties` | `TryRegisterProperty` / `UnregisterProperties` | Prefab Stage のパッチ済みプロパティ |
+| `TrailRendererInspector.SavePositionForPreview` / `RestorePositionAfterPreview` / `BeginDrivenPropertyCheck` | `TryRegisterProperty` / `UnregisterProperties` / `IsDriving` | TrailRenderer のプレビュー中の位置退避 |
+
+表示目的で参照しているのは UI Toolkit の1か所だけ。`EditorGUI` や `TransformInspector`（IMGUI、`OnInspectorGUI`）には driven を見るコードが無いので、
+**Transform の Rotation は駆動中でも青くならない**。駆動自体は `IsDriven` と保存・復元の挙動で確認できる。
+IMGUI で駆動状態を見せたければ、カスタムエディタで `IsDriven` を引いて自前で描画する必要がある。
 
 ### その他
 
@@ -136,15 +149,27 @@ driven でない driver 自身のフィールド変更や `OnValidate` 経由の
 そもそも「scene を汚さずに値を駆動したい」という目的とずれる。
 駆動は Editor 側（カスタムエディタ）に置き、Runtime の driver はデータのみにした。
 
+## ディレクトリ構成（feature ごと）
+
+```
+Assets/PropertyDriverExperiments/
+  Core/             DrivenPropertyManagerProxy, DrivenPropertyAttribute, DrivenTrack<T>, Editor/DrivenPropertyEditorProxy
+  Generator/        PropertyDriver.Generator.dll（RoslynAnalyzer ラベル）
+  DrivenValue/      DrivenTarget, SliderDriver, SliderDriverSettings(+.asset), Editor/SliderDriverEditor, DrivenValue* Timeline トラック一式
+  MaterialColor/    MaterialColorTarget, MaterialColor* Timeline トラック一式
+  FixtureRotation/  FixtureRotation, FixtureRotation* Timeline トラック一式
+  DrivenValueTimeline.playable   3 feature 共用の検証用タイムライン
+```
+
 ## 実験スクリプト
 
-- `Runtime/DrivenPropertyManagerProxy.cs` : reflection ラッパー
-- `Runtime/DrivenTarget.cs` : 駆動される側 (`value`, `offset`, `color`)
-- `Runtime/SliderDriverSettings.cs` : ScriptableObject。スライダー値 `t` を scene の外に持つ
-- `Runtime/SliderDriver.cs` : データのみ。`settings.t` を `[min, max]` に写像した `DrivenValue` を持つ
-- `Editor/DrivenPropertyEditorProxy.cs` : `IsDriven` / `IsDriving` ラッパー
-- `Editor/SliderDriverEditor.cs` : Register / Unregister / Save scene / Save assets はボタン。スライダーは settings アセットの `t` を編集し、**登録中に限り**その場で target に書き込む（未登録なら書かない）。登録状態・値の同期状態・各オブジェクトの dirty を常時表示
-- `SliderDriverSettings.asset` : 実験用の設定アセット（SampleScene の driver に割り当て済み）
+- `Core/DrivenPropertyManagerProxy.cs` : reflection ラッパー
+- `DrivenValue/DrivenTarget.cs` : 駆動される側 (`value`, `offset`, `color`)
+- `DrivenValue/SliderDriverSettings.cs` : ScriptableObject。スライダー値 `t` を scene の外に持つ
+- `DrivenValue/SliderDriver.cs` : データのみ。`settings.t` を `[min, max]` に写像した `DrivenValue` を持つ
+- `Core/Editor/DrivenPropertyEditorProxy.cs` : `IsDriven` / `IsDriving` ラッパー
+- `DrivenValue/Editor/SliderDriverEditor.cs` : Register / Unregister / Save scene / Save assets はボタン。スライダーは settings アセットの `t` を編集し、**登録中に限り**その場で target に書き込む（未登録なら書かない）。登録状態・値の同期状態・各オブジェクトの dirty を常時表示
+- `DrivenValue/SliderDriverSettings.asset` : 実験用の設定アセット（SampleScene の driver に割り当て済み）
 
 SampleScene に `DrivenTarget` と `SliderDriver` を配置済み。
 
@@ -160,7 +185,7 @@ Timeline は driven property を **公開 API** で扱える。reflection は不
 - プレビュー終了で `AnimationMode.StopAnimationMode(previewDriver)`（`WindowState.cs:282`）。これで登録が解除され値が戻る
 - `GatherProperties` が呼ばれるのはエディタのプレビュー時のみ。`Application.isPlaying` では早期 return
 
-### 実装（`Runtime/Timeline/`）
+### 実装（`Core/DrivenTrack.cs` と `DrivenValue/`）
 
 - `DrivenTrack<TBinding>` : 抽象トラック基底。`protected abstract string[] DrivenPropertyPaths` を派生に必ず宣言させ、`GatherProperties` でそれを `AddFromName` する
 - `DrivenValueTrack : DrivenTrack<DrivenTarget>` : `DrivenPropertyPaths => { DrivenTarget.ValuePath }` と `CreateTrackMixer`
@@ -190,6 +215,80 @@ Timeline は driven property を **公開 API** で扱える。reflection は不
 検証時の落とし穴: クリップの無い時刻で評価すると weight 0 で何も書かれない。クリップ位置がエディタで変わっていると、以前通ったテストが「値が書かれない」ように見える。
 
 補足: CLI から `SetCurrentTime` しただけでは Timeline の遅延評価（`DeferredEvaluate`）がエディタ更新まで走らないため、検証では `director.Evaluate()` を明示的に呼んだ。
+
+## MaterialPropertyBlock を Timeline から書く（driven property の枠外）
+
+MPB の管理は MonoBehaviour 側に置き、Timeline は薄くする。
+
+- `MaterialColor/MaterialColorTarget.cs` : `[RequireComponent(Renderer)]`。`SetColor(Color)` で最初の呼び出し時に現在の block を控えてから色を上書きし、`ResetColor()` で控えた block に戻す。`BaseColor` は上書き前の色（控えた block に無ければ `sharedMaterial` の値）。プロパティ名は `[SerializeField] string propertyName`（既定 `_BaseColor`）
+- `MaterialColor/MaterialColorTrack.cs` : binding は `MaterialColorTarget`。`CreateTrackMixer` のみ
+- `MaterialColorMixerBehaviour` : クリップの色を加重平均して `SetColor(Lerp(BaseColor, 平均, 総 weight))`。クリップの無い区間と `OnPlayableDestroy` で `ResetColor()`
+
+### driven property との関係
+
+- `MaterialPropertyBlock` は Renderer にシリアライズされない。`SerializedObject` 上に対応するパスが無いので、`GatherProperties` で申告するものが無い
+- したがって書いても scene は汚れず、保存にも出ない。ただし Timeline も何も戻してくれない
+- 復元は target の `ResetColor()` を mixer が呼ぶことで行う。Timeline の Text サンプル（`TextTrackMixerBehaviour`）が mixer 内でやっている「元の値を控えて戻す」を、コンポーネント側に移した形
+
+### 実測（URP Lit、Cube「ColorCube」、クリップ red 0-2s / blue 3-5s）
+
+| 操作 | `IsOverriding` | block の `_BaseColor` | `scene.isDirty` | material |
+| --- | --- | --- | --- | --- |
+| プレビュー前 | false | 無し | false | 不変 |
+| 時刻 1.0 | true | 赤 | false | 不変 |
+| 時刻 2.5（隙間） | false | 無し（復元） | false | 不変 |
+| 時刻 4.0、この状態で保存 | true | 青。YAML に出るのは `propertyName: _BaseColor` だけ | false | 不変 |
+| プレビュー終了 | false | 無し（復元） | false | 不変 |
+| 直接 `SetColor(green)` → `ResetColor()` | true → false | 緑 → 無し | false | 不変 |
+
+`Renderer.IsDirty` も material の dirty も一度も立たなかった。
+プレビュー外で `director.Evaluate()` すると上書きが残るが、グラフ破棄時に `OnPlayableDestroy` → `ResetColor()` で戻る（前版で確認）。
+
+`sharedMaterial.color` に書くとマテリアルアセットが汚れ、`renderer.material` はエディタでインスタンスをリークするので、どちらも使わない。
+
+## 慣性のあるハードを模して Transform を駆動する（FixtureRotation）
+
+「Timeline は Art-Net の信号、補間はハードの都合」という分担。
+
+### 責務の分け方（最終形）
+
+- `FixtureRotation/FixtureRotation.cs` : `[ExecuteAlways]`。`Quaternion? targetRotation` を持ち、`SetTargetRotation(q)` / `ClearTarget()` だけが入口。`LateUpdate` はターゲットがあれば `RotateTowards(…, degreesPerSecond * Time.deltaTime)`。driven 登録は一切持たない
+- `FixtureRotation/FixtureRotationTrack.cs` : `GatherProperties` で binding の Transform の `m_LocalRotation` を申告する。登録と復元は Timeline のプレビュー driver がやる
+- mixer : weight 最大のクリップの回転を `SetTargetRotation` に送るだけ。隙間は最後の信号をホールド。`OnPlayableDestroy` で `ClearTarget()`
+
+登録の主体は「プレビューで Transform を一時的に動かしている側」= トラック。ハード側は信号の有無しか知らない。
+
+`ClearTarget` が無いと、プレビュー終了で Timeline が Transform をレストに戻したあと、`LateUpdate` が古いターゲットへ回し直す。
+そのときの Transform は未登録なので普通の書き込みになり、次の保存で残る。ターゲットを nullable にして「信号なし」を表現する。
+
+### 検討して不採用にした案
+
+- コンポーネント自身が `m_LocalRotation` を登録し `driving` フラグを持つ: ハードにプレビューの都合が混ざる
+- mixer が `playable.GetTime()` の差分で `Tick` する: スクラブ時の `FrameData.deltaTime` は 0（`seekOccurred = true`）で、逆スクラブでは進まない
+- レストから固定ステップで再シミュレーションして時刻の関数にする: 決定的だが実機の挙動と別物になる
+- `EditorApplication.update` から `QueuePlayerLoopUpdate()` を要求して実時間差分で回す: 実測では止まっている間にフレームが回らず効いていなかった。上限なしの実時間差分は、止まって動かした瞬間に一気に飛ぶ
+
+### 編集モードの `Time.deltaTime`（ExecuteAlways の `LateUpdate` で実測、エディタをフォーカスした状態）
+
+| 状況 | `LateUpdate` | `Time.deltaTime` |
+| --- | --- | --- |
+| Timeline ウィンドウで再生 | エディタの毎フレーム呼ばれる（324 回 / 約 11 秒） | 実フレーム差分（0.013〜0.04 秒）。`unscaledDeltaTime` と一致 |
+| スクラブ中 | ドラッグしている間は毎フレーム | 実フレーム差分（0.007〜0.05 秒） |
+| マウスを止める・何もしない | 呼ばれない | - |
+| 空白のあと最初のフレーム | 呼ばれる | `Time.maximumDeltaTime`（0.3333 秒）で頭打ち。10 秒空いても 0.3333 |
+| 値が 0 のフレーム | | 無し |
+
+つまり ExecuteAlways + `Time.deltaTime` で、再生中は Play Mode と同じ補間、スクラブ中はドラッグしている実時間ぶんだけ動き、止めると止まり、再開時の飛びは最大 0.333 秒ぶん。エディタループを自前で回す必要は無い。
+
+### 実測（最終形）
+
+| 操作 | `InAnimationMode` | `IsDriven(m_LocalRotation.x)` | target | euler |
+| --- | --- | --- | --- | --- |
+| プレビュー前 | false | false | null | レスト |
+| 時刻 0.5 | true | true（Timeline の driver） | (0,90,0) | 以降 LateUpdate で回る |
+| プレビュー終了 | false | false | null | レスト |
+
+`scene.isDirty` は一度も立たなかった。IMGUI の Transform インスペクタは driven でも青くならない（別章参照）。
 
 ## propertyPath の生成（source generator）
 
