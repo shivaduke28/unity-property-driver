@@ -25,6 +25,7 @@ Timeline は `TrackAsset.GatherProperties` でこの仕組みに乗れる（公�
 - Timeline のプレビュー中は、トラックが `GatherProperties` で申告したプロパティを Timeline が登録し、終了時に戻す
 - UI Toolkit のインスペクタでは driven なフィールドが青背景になる。IMGUI（Transform など）には表示が無い
 - `MaterialPropertyBlock` はシリアライズされないので driven の対象外。復元はコンポーネント側で行う
+- Prefab インスタンスを駆動しても override にならず、駆動中に Apply してもアセットに入らない。Prefab Stage でも保存にはスナップショットが使われる
 - 編集モードでも `[ExecuteAlways]` の `LateUpdate` では `Time.deltaTime` に実フレーム差分が入る（`Time.maximumDeltaTime` で頭打ち）
 
 ## リポジトリ構成
@@ -33,7 +34,7 @@ Timeline は `TrackAsset.GatherProperties` でこの仕組みに乗れる（公�
 Assets/PropertyDriverExperiments/
   Core/             DrivenPropertyManager の reflection プロキシ、[DrivenProperty] 属性、DrivenTrack<T>
   Generator/        source generator の DLL（RoslynAnalyzer ラベル）
-  DrivenValue/      float 値を駆動する実験。カスタムインスペクタと Timeline トラック
+  DrivenValue/      float 値を駆動する実験。カスタムインスペクタ、Timeline トラック、Prefab 検証用アセット
   MaterialColor/    MaterialPropertyBlock で色を駆動する Timeline トラック
   FixtureRotation/  慣性のあるハードを模して Transform を駆動する Timeline トラック
   DrivenValueTimeline.playable   検証用タイムライン
@@ -56,7 +57,6 @@ cp bin/Release/netstandard2.0/PropertyDriver.Generator.dll ../../Assets/Property
 ## 未解決
 
 - Material のシェーダーキーワード。Material に書くとアセットが汚れ、インスタンス生成はリークする。グローバルキーワードか、別の案か
-- Prefab インスタンスで driven な値が override 扱いになるか
 - エディタ再起動後に登録が残るか
 
 ## 環境

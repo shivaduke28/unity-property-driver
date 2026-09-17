@@ -290,6 +290,64 @@ MPB の管理は MonoBehaviour 側に置き、Timeline は薄くする。
 
 `scene.isDirty` は一度も立たなかった。IMGUI の Transform インスペクタは driven でも青くならない（別章参照）。
 
+## Prefab との関係
+
+検証用に `DrivenValue/DrivenTargetPrefab.prefab`（`DrivenTarget`、`value = 1`）を作り、SampleScene に `PrefabInstance` として配置。driver は `SliderDriver`。
+
+### 1. インスタンスで駆動したとき override になるか
+
+| 操作 | `HasPrefabInstanceAnyOverrides` | `SerializedProperty.prefabOverride` | `GetPropertyModifications` | 保存後 YAML の `m_Modifications` |
+| --- | --- | --- | --- | --- |
+| 登録して 5 を書く | false | false | 無し | 無し |
+| その状態で保存 | false | false | 無し | 無し |
+| 解除して 6 を書く（素の代入） | false（直後） | false（直後） | 無し（直後） | |
+| その状態で保存 | **true** | **true** | `value=6` | `value=6` |
+
+driven な書き込みは override にならない。素の書き込みは保存を経て override として検出される（override 判定は保存時などに遅延評価される）。
+
+### 2. 駆動中に Apply したら何がアセットに入るか
+
+登録して 5 を書いた状態（スナップショットは 1）で:
+
+| 操作 | アセットの `value` |
+| --- | --- |
+| `PrefabUtility.ApplyPropertyOverride(value)` | 1 のまま |
+| `PrefabUtility.ApplyPrefabInstance` | 1 のまま |
+| `AssetDatabase.SaveAssets` | 1 のまま |
+
+駆動中の値は override として存在しないので、Apply しても何も反映されない。Timeline プレビュー中に誤って Apply してもアセットは汚れない。
+
+### 3. Prefab Stage で駆動したとき
+
+`PrefabStageUtility.OpenPrefab` で開いた `prefabContentsRoot` の `DrivenTarget` に対して:
+
+| 操作 | `stage.scene.isDirty` | `SaveAsPrefabAsset` 後のアセット |
+| --- | --- | --- |
+| 登録して 7 を書く | false | 1（スナップショット） |
+| 解除 | false | メモリ上の値は 1 に戻る |
+| 素の代入で 8 を書く | false | **8** |
+
+Stage 内でも保存にはスナップショットが使われる。素の代入は Stage を dirty にしないが保存すれば入る（シーンと同じ性質）。
+
+### 4. Timeline プレビュー経由（`GatherProperties` の登録）
+
+`DrivenValueTimeline.playable` に `DrivenValueTrack`「Driven Value (Prefab)」を追加し、`PrefabInstance` の `DrivenTarget` に binding（クリップ: 0.5-2s で 3、3-5s で 9）。プレビューの結果:
+
+| 操作 | `value` | override | 備考 |
+| --- | --- | --- | --- |
+| 時刻 1.0 | 3 | 無し | Timeline の driver 名義で `IsDriven` true |
+| 時刻 4.0 | 9 | 無し | |
+| プレビュー中に保存 | | 無し | `m_Modifications` に出ない |
+| プレビュー終了 | 1 | 無し | スナップショットに戻る |
+
+注意: トラックを追加した直後の同じフレームで `SetTimeline` してもグラフ再構築が間に合わず、次のフレームから駆動される。
+
+### まとめ
+
+driven 登録された値は Prefab の override 判定・Apply・Prefab Stage の保存のすべてで「存在しない」扱いになる。
+Prefab インスタンスを Timeline で駆動しても、override も Apply 漏れも起きない。
+Unity 自身も Prefab Stage が一時的に書き換える値を driven で除外している（IL 走査の `PrefabStage.RecordPatchedPropertiesForContent`）。
+
 ## propertyPath の生成（source generator）
 
 private な serialized field のパスを手書きせず、`[DrivenProperty]` から生成する。`src/PropertyDriver.Generator/` が生成器本体。
@@ -346,7 +404,6 @@ cp bin/Release/netstandard2.0/PropertyDriver.Generator.dll ../../Assets/Property
 
 ## 未検証・次の課題
 
-- Prefab インスタンスで driven な値が override 扱いになるか
 - エディタ再起動後の登録状態
 - driver 破棄時に登録がどうなるか
 - シーンを開き直したときの登録状態（ネイティブ登録はシーン再ロードで残るのか）
