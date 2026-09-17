@@ -123,7 +123,7 @@ IMGUI で駆動状態を見せたければ、カスタムエディタで `IsDriv
 
 ### その他
 
-- **二重登録は許容される。** 別 driver が同じプロパティを `RegisterProperty` してもエラーは出ず、両方 `IsDriving` が true になる。片方を解除してももう片方は残る。
+- **二重登録は許容される。** 別 driver が同じプロパティを `RegisterProperty` してもエラーは出ず、両方 `IsDriving` が true になる。片方を解除してももう片方は残る。スナップショットは最初の登録時点のもの 1 つだけ（「境界条件の実測」参照）。
 - **書き込みロックではない。** `SerializedObject` 経由で driven なプロパティに書き込むとメモリ上の値は変わる。Inspector も編集可能なまま。
 - **ドメインリロードを跨いで登録が残る。** OnEnable を持たない driver で登録した後に `RequestScriptReload` しても `IsDriving` は true のまま。登録はネイティブ側に保持されている。エディタ再起動を跨ぐかは未検証。
 - **エディタ側から登録して書き込んでも scene は clean のまま。** `ExecuteAlways` は不要。
@@ -347,6 +347,58 @@ Stage 内でも保存にはスナップショットが使われる。素の代�
 driven 登録された値は Prefab の override 判定・Apply・Prefab Stage の保存のすべてで「存在しない」扱いになる。
 Prefab インスタンスを Timeline で駆動しても、override も Apply 漏れも起きない。
 Unity 自身も Prefab Stage が一時的に書き換える値を driven で除外している（IL 走査の `PrefabStage.RecordPatchedPropertiesForContent`）。
+
+## 境界条件の実測
+
+### Timeline の Scene Preview をオフにしたとき
+
+`TimelineAsset.editorSettings.scenePreview = false` にすると `WindowState.GatherProperties` が早期 return し、登録は一切行われない。
+その状態でスクラブすると評価自体は行われる（mixer は動く）ので、書き込みは未登録の素の書き込みになる。
+
+| 操作 | `value` | `IsDriven` | 保存後 YAML |
+| --- | --- | --- | --- |
+| 時刻 2.0 | 2 | false | |
+| その状態で保存 | 2 | false | **`value: 2`** |
+| `ClearTimeline` | 2（戻らない） | false | |
+
+Scene Preview を切ると、driven 前提のトラックはシーンを汚す。トラック側で `director.playableAsset` の `editorSettings.scenePreview` を見て警告する、書き込みを止める、などの対処が必要。
+
+### driver / target が登録中に破棄されたとき
+
+| 操作 | 結果 |
+| --- | --- |
+| driver（一時オブジェクト）を `DestroyImmediate` | 登録は自動で消え、値はその場でスナップショットに戻る。`IsDriven` false |
+| 破棄済み driver で `UnregisterProperties` | `MissingReferenceException`（Unity の Object マーシャリングで弾かれる） |
+| target を `DestroyImmediate` | `IsDriving(driver, deadTarget)` は false。driver の `UnregisterProperties` は例外なし |
+
+driver の破棄で登録が残り続けることはない。
+
+### Play Mode の出入り
+
+`SliderDriver` 名義で `value` を登録（スナップショット 0）し 5 を書いた状態で Play を押す:
+
+| 時点 | `value` | `IsDriven` |
+| --- | --- | --- |
+| Play Mode 中 | **0** | false |
+| Edit Mode に戻った直後 | 0 | false |
+| 保存後 YAML | `value: 0` | |
+
+Play Mode に入るときのシーン状態はスナップショットで作られ、駆動中の値は Play Mode に持ち込まれない。登録も Play Mode の往復（ドメインリロード 2 回とシーン再ロード）を跨がない。
+戻ったあとは未登録なので、Timeline 外の driver は登録し直す必要がある。
+
+### 同じプロパティに 2 つの driver が登録したとき
+
+A が 0 で登録 → 5 を書く → B が登録（このとき値は 5）→ 7 を書く:
+
+| 操作 | `value` | 備考 |
+| --- | --- | --- |
+| 保存 | YAML は **0** | スナップショットは最初の登録時点 |
+| A を先に解除 | 7（B が駆動中） | |
+| 続けて B を解除 | **0** | 最後の解除で最初のスナップショットに戻る |
+| B を先に解除（別試行） | 7（A が駆動中） | |
+| 続けて A を解除 | 0 | |
+
+スナップショットは最初に登録した時点の値 1 つだけで、後から登録した driver は新しいスナップショットを作らない。復元は最後の driver が解除されたときに起きる。解除の順序は結果に影響しない。
 
 ## propertyPath の生成（source generator）
 

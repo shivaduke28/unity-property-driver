@@ -27,6 +27,8 @@ Timeline は `TrackAsset.GatherProperties` でこの仕組みに乗れる（公�
 - `MaterialPropertyBlock` はシリアライズされないので driven の対象外。復元はコンポーネント側で行う
 - Prefab インスタンスを駆動しても override にならず、駆動中に Apply してもアセットに入らない。Prefab Stage でも保存にはスナップショットが使われる
 - 編集モードでも `[ExecuteAlways]` の `LateUpdate` では `Time.deltaTime` に実フレーム差分が入る（`Time.maximumDeltaTime` で頭打ち）
+- Timeline の Scene Preview をオフにすると登録されず、トラックの書き込みがそのまま保存される。要対策
+- driver が破棄されると登録は自動で消える。Play Mode の往復でも消える。二重登録のスナップショットは最初の登録時点のもの
 
 ## リポジトリ構成
 
